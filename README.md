@@ -55,7 +55,7 @@ g++ -std=gnu++17 -O2 -Wall -Wextra -Wno-missing-field-initializers -o clamgui_v3
 Or use the helper scripts:
 
 ```
-tools/pin_current.sh               # once: fill the sha256 values in deps.env (verify against upstream!)
+tools/pin_current.sh               # fill any empty ClamAV sha256 values in deps.env (verify against upstream!)
 tools/build_clamav_linux.sh        # build/clamav-linux/{bin,certs}
 tools/build_clamrt.sh linux|win    # build/out/clamrt_*
 tools/build_clamgui.sh linux [none|asan|tsan]
@@ -89,6 +89,7 @@ deps.env      single source of truth for upstream versions
 
 ## CI/CD
 
+- `build.yml` — builds the binaries (ClamGUI + clamrt for Linux x86_64 and Windows x64) on every PR/push to `main`, uploads them as workflow artifacts with `SHA256SUMS`, runs the Windows `.exe` on a Windows runner (`--version`, `--sha256`), and on a `v*` tag attaches everything to a **draft** GitHub release. Needs no ClamAV.
 - `ci.yml` — every PR: version hygiene + shellcheck, ClamAV build (cached by `deps.env`), clamrt unit/e2e, ClamGUI e2e on normal/ASan/TSan, Windows cross-build, Windows smoke test with the official ClamAV Windows tools.
 - `clamav-watch.yml` — daily: new Cisco release → `tools/bump_clamav.sh` → PR for human review.
 - `release.yml` — tag `v*`: re-run CI, build, sign (Azure Trusted Signing hooks), Inno installer, SHA256SUMS, provenance attestation, **draft** release including the ClamAV source tarball and our source (GPL).
@@ -97,7 +98,7 @@ A new ClamAV release is a one-line PR to `deps.env`. CI never downloads "latest"
 
 ### One-time setup
 
-1. Run `tools/pin_current.sh`, check the printed hashes against Cisco's release page, commit `deps.env`.
+1. ClamAV hashes in `deps.env` are filled in (computed from the 1.5.4 release assets — compare with Cisco's release page). FLTK is pinned to a git commit. For a new ClamAV version run `tools/bump_clamav.sh`.
 2. Protect `main`: PRs only, required checks = every job in `ci.yml`.
 3. Create a `release` environment with a required reviewer; add signing secrets (`SIGN_WITH=azure`, `AZURE_*`, `SIGN_*`) or swap in your own signtool step.
 4. Edit `installer/clamgui.iss` (new AppId GUID, publisher, URL) and `installer/licenses/*`.
@@ -114,7 +115,7 @@ Not verified — treat as unproven until you run it:
 - The Windows exe has never been run (no Windows machine or Wine was available); the Windows service, tray and PowerShell-notification paths are compile-checked only.
 - No access to `database.clamav.net` during development: signature updates, hash lookups and report upload were tested against a local mock only.
 - Linux tray tested only with `stalonetray` under Xvfb; clamrt real-time blocking was exercised only through supervisor start-up.
-- The GitHub workflows have never run; `build_clamav_linux.sh`, `build_fltk_win.sh`, the installer, signing steps and the Windows smoke job are untested. `fetch_deps.sh` / `bump_clamav.sh` assume Cisco's current asset names (`clamav-X.Y.Z.tar.gz`, `clamav-X.Y.Z.win.x64.zip`).
+- The GitHub workflows have never run on GitHub (the build chain behind `build.yml` — FLTK for Windows, ClamGUI and clamrt for both platforms — was run locally and produced all four binaries); `build_clamav_linux.sh`, `build_fltk_win.sh`, the installer, signing steps and the Windows smoke job are untested. `fetch_deps.sh` / `bump_clamav.sh` assume Cisco's current asset names (`clamav-X.Y.Z.tar.gz`, `clamav-X.Y.Z.win.x64.zip`).
 - The clamrt e2e job needs root and fanotify; hosted runners may refuse it — mark it non-blocking or use a self-hosted runner.
 
 ## Documentation

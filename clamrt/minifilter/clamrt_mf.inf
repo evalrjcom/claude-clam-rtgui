@@ -1,0 +1,58 @@
+; clamrt_mf.inf -- clamrt v4 minifilter (UNTESTED skeleton).  Build the .sys with the WDK, then sign it.
+[Version]
+Signature   = "$Windows NT$"
+Class       = "AntiVirus"
+ClassGuid   = {b1d1a169-c54f-4379-81db-bee7d88d7454}
+Provider    = %ManufacturerName%
+DriverVer   = 01/01/2026,3.0.0.0
+CatalogFile = clamrt_mf.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 12
+clamrt.DriverFiles = 12
+
+[DefaultInstall.NTamd64]
+OptionDesc = %ServiceDescription%
+CopyFiles  = clamrt.DriverFiles
+
+[DefaultInstall.NTamd64.Services]
+AddService = clamrt_mf,,clamrt.Service
+
+[DefaultUninstall.NTamd64]
+LegacyUninstall = 1
+DelFiles = clamrt.DriverFiles
+
+[DefaultUninstall.NTamd64.Services]
+DelService = clamrt_mf,0x200
+
+[clamrt.Service]
+DisplayName    = %ServiceName%
+Description    = %ServiceDescription%
+ServiceBinary  = %12%\clamrt_mf.sys
+ServiceType    = 2
+StartType      = 3
+ErrorControl   = 1
+LoadOrderGroup = "FSFilter Anti-Virus"
+Dependencies   = FltMgr
+AddReg         = clamrt.AddRegistry
+
+[clamrt.AddRegistry]
+HKR,"Instances","DefaultInstance",0x00000000,"clamrt Instance"
+HKR,"Instances\clamrt Instance","Altitude",0x00000000,"320005"
+HKR,"Instances\clamrt Instance","Flags",0x00010001,0
+
+[clamrt.DriverFiles]
+clamrt_mf.sys
+
+[SourceDisksNames]
+1 = %DiskId1%,,,
+
+[SourceDisksFiles]
+clamrt_mf.sys = 1,,
+
+[Strings]
+ManufacturerName   = "clamrt"
+ServiceName        = "clamrt minifilter"
+ServiceDescription = "clamrt execution-blocking minifilter (UNTESTED)"
+DiskId1            = "clamrt install disk"

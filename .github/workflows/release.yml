@@ -1,0 +1,92 @@
+name: release
+# Tag  v2026.11  (suite release) -> signed Windows installer + Linux binaries + source tarball + checksums.
+on:
+  push: { tags: ["v*"] }
+permissions: { contents: write, id-token: write, attestations: write }
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+  build-linux-and-cross:
+    needs: verify
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/check_versions.sh
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ mingw-w64 libfltk1.3-dev libx11-dev libxft-dev libxinerama-dev libxcursor-dev libxfixes-dev curl
+      - run: tools/build_fltk_win.sh
+      - run: tools/build_clamrt.sh linux && tools/build_clamrt.sh win
+      - run: tools/build_clamgui.sh linux none && tools/build_clamgui.sh win
+      - run: tools/fetch_deps.sh src
+      - name: "source tarballs (GPL - the exact ClamAV source plus our code, as released)"
+        run: |
+          . tools/lib.sh
+          mkdir -p build/release
+          git archive --format=tar.gz -o "build/release/clamsuite-source-${GITHUB_REF_NAME}.tar.gz" HEAD
+          cp "build/deps/clamav-$CLAMAV_VERSION.tar.gz" build/release/
+      - uses: actions/upload-artifact@v4
+        with: { name: unsigned-binaries, path: build/out }
+      - uses: actions/upload-artifact@v4
+        with: { name: source, path: build/release }
+
+  windows-installer:
+    needs: build-linux-and-cross
+    runs-on: windows-latest
+    environment: release                  # protected environment: required reviewers + the signing secrets live here
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: unsigned-binaries, path: build/out }
+      - run: choco install innosetup -y --no-progress
+      - run: tools/fetch_deps.sh src win && tools/stage_installer.sh
+      # --- signing: pick ONE and fill in your secrets. Sign the exes BEFORE the installer is built, then the installer itself.
+      - name: sign (Azure Trusted Signing)
+        if: ${{ vars.SIGN_WITH == 'azure' }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.SIGN_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGN_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGN_PROFILE }}
+          files-folder: build/stage
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: build installer
+        run: |
+          v=$(. tools/lib.sh; gui_ver); cav=$(grep '^CLAMAV_VERSION=' deps.env | cut -d= -f2)
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/DGuiVer=$v" "/DSuiteVer=${GITHUB_REF_NAME#v}" "/DClamAVVer=$cav" installer/clamgui.iss
+      - name: sign installer (Azure Trusted Signing)
+        if: ${{ vars.SIGN_WITH == 'azure' }}
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.SIGN_ENDPOINT }}
+          trusted-signing-account-name: ${{ vars.SIGN_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGN_PROFILE }}
+          files-folder: build/installer
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - uses: actions/upload-artifact@v4
+        with: { name: installer, path: build/installer }
+
+  publish:
+    needs: [build-linux-and-cross, windows-installer]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dl }
+      - run: |
+          mkdir out; cp dl/installer/*.exe dl/source/* out/; cp dl/unsigned-binaries/clamgui_v*_linux_x86_64 dl/unsigned-binaries/clamrt_linux_x86_64 out/
+          (cd out && sha256sum * > SHA256SUMS.txt)
+      - uses: actions/attest-build-provenance@v1
+        with: { subject-path: "out/*" }
+      - uses: softprops/action-gh-release@v2
+        with: { files: out/*, generate_release_notes: true, draft: true }     # draft: a human reads it, then publishes

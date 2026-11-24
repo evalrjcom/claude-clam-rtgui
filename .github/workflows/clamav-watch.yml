@@ -1,0 +1,30 @@
+name: clamav-watch
+# Daily: if Cisco published a newer ClamAV, pin it in deps.env and open a PR.  The PR runs the whole ci.yml before anyone can merge.
+on:
+  schedule: [{ cron: "17 5 * * *" }]
+  workflow_dispatch: {}
+permissions: { contents: write, pull-requests: write }
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: latest
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          tag=$(gh api repos/Cisco-Talos/clamav/releases/latest --jq .tag_name)      # e.g. clamav-1.5.5
+          v=${tag#clamav-}; cur=$(grep '^CLAMAV_VERSION=' deps.env | cut -d= -f2)
+          [[ $v =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected tag $tag"; exit 1; }
+          if [ "$v" != "$cur" ] && [ "$(printf '%s\n%s\n' "$cur" "$v" | sort -V | tail -1)" = "$v" ]; then echo "new=$v" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.latest.outputs.new != ''
+        run: tools/bump_clamav.sh "${{ steps.latest.outputs.new }}"
+      - if: steps.latest.outputs.new != ''
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: bump/clamav-${{ steps.latest.outputs.new }}
+          title: "Bump ClamAV to ${{ steps.latest.outputs.new }}"
+          commit-message: "deps: ClamAV ${{ steps.latest.outputs.new }}"
+          body: |
+            Automated bump. Before merging: read the upstream release notes and security advisories, confirm the sha256 values against
+            Cisco's published checksums, and make sure all ci.yml jobs (build, unit, e2e, sanitizers, Windows smoke) are green.
+            Merging does not publish anything; releases are cut by tagging.

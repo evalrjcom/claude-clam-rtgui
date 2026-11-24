@@ -1,0 +1,1 @@
+Replace with the GPLv2 text (https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt) - tools/stage_installer.sh copies everything in installer/licenses.

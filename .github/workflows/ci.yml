@@ -1,0 +1,102 @@
+name: ci
+on:
+  workflow_call:
+  pull_request:
+  push: { branches: [main] }
+permissions: { contents: read }
+concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/check_versions.sh                      # filename version == every in-file / doc / installer reference
+      - run: sudo apt-get install -y shellcheck && shellcheck -S warning tools/*.sh
+
+  clamav-linux:                                           # build the pinned ClamAV once; later jobs reuse it from the cache
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - id: key
+        run: echo "k=clamav-linux-${{ hashFiles('deps.env','tools/build_clamav_linux.sh') }}" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with: { path: build/clamav-linux, key: "${{ steps.key.outputs.k }}" }
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc g++ pkg-config python3 libssl-dev libjson-c-dev libbz2-dev zlib1g-dev libpcre2-dev libxml2-dev libcurl4-openssl-dev libncurses-dev
+          tools/build_clamav_linux.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: clamav-linux, path: build/clamav-linux, retention-days: 7 }
+
+  clamrt:
+    needs: clamav-linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: clamav-linux, path: build/clamav-linux }
+      - run: chmod -R +x build/clamav-linux/bin
+      - run: sudo apt-get update && sudo apt-get install -y cmake gcc mingw-w64
+      - run: tools/test_clamrt_unit.sh                    # 30 unit tests under ASan+UBSan, no clamd needed
+      - run: tools/build_clamrt.sh linux
+      - run: tools/build_clamrt.sh win
+      - run: sudo -E tools/test_clamrt_e2e.sh             # root so the fanotify tests run too
+      - uses: actions/upload-artifact@v4
+        with: { name: clamrt, path: build/out, retention-days: 7 }
+
+  clamgui:
+    needs: clamav-linux
+    runs-on: ubuntu-22.04
+    strategy: { fail-fast: false, matrix: { san: [none, asan, tsan] } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: clamav-linux, path: build/clamav-linux }
+      - run: chmod -R +x build/clamav-linux/bin
+      - run: sudo apt-get update && sudo apt-get install -y g++ libfltk1.3-dev xvfb xdotool stalonetray imagemagick curl openssl cron libx11-dev libxft-dev libxinerama-dev libxcursor-dev libxfixes-dev
+      - run: tools/build_clamgui.sh linux ${{ matrix.san }}   # -Wall -Wextra -Werror
+      - run: sudo -E env "PATH=$PATH" tools/test_clamgui_e2e.sh ${{ matrix.san }}
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: "e2e-${{ matrix.san }}", path: build/e2e_*.txt }
+
+  windows-cross:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake mingw-w64 curl
+      - uses: actions/cache@v4
+        id: fltk
+        with: { path: build/fltk_win, key: "fltk-win-${{ hashFiles('deps.env','tools/build_fltk_win.sh') }}" }
+      - if: steps.fltk.outputs.cache-hit != 'true'
+        run: tools/build_fltk_win.sh
+      - run: tools/build_clamrt.sh win
+      - run: tools/build_clamgui.sh win
+      - uses: actions/upload-artifact@v4
+        with: { name: windows-binaries, path: build/out, retention-days: 7 }
+
+  windows-smoke:                                          # actually RUNS the exe on Windows (the gap local testing never closed)
+    needs: windows-cross
+    runs-on: windows-latest
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: windows-binaries, path: build/out }
+      - run: tools/fetch_deps.sh win
+      - name: scan with the real Windows ClamAV tools
+        run: |
+          v=$(. tools/lib.sh; gui_ver)
+          CS=$(find build/deps/clamav-win -name clamscan.exe | head -1)
+          export CLAMGUI_HOME="$PWD/smoke_home"; mkdir -p "$CLAMGUI_HOME/config" "$CLAMGUI_HOME/data/db" smoke_in
+          printf 'Test.Sig:0:*:deadbeefcafe0123\n' > "$CLAMGUI_HOME/data/db/t.ndb"
+          printf 'clamscan=%s\n' "$(cygpath -w "$PWD/$CS")" > "$CLAMGUI_HOME/config/clamgui.conf"
+          printf '\xde\xad\xbe\xef\xca\xfe\x01\x23 x' > smoke_in/bad.bin; echo clean > smoke_in/ok.txt
+          G=build/out/clamgui_v${v}_win64.exe
+          "$G" --version | grep -q "ClamGUI v$v"
+          [ "$("$G" --sha256 smoke_in/ok.txt | cut -d' ' -f1)" = "$(sha256sum smoke_in/ok.txt | cut -d' ' -f1)" ]
+          "$G" --scan smoke_in/ok.txt; test $? -eq 0
+          set +e; "$G" --scan smoke_in/bad.bin; rc=$?; set -e; test $rc -eq 1

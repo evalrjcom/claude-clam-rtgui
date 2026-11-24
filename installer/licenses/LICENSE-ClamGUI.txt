@@ -1,0 +1,2 @@
+ClamGUI and clamrt - replace this text with the license you choose for your own code.
+(ClamAV itself is GPLv2; see LICENSE-ClamAV-GPLv2.txt and SOURCE.txt in this folder.)
